@@ -4,9 +4,15 @@ AXP192::AXP192()
 {
 }
 
+
+// Will be deprecated
 void AXP192::begin(mbus_mode_t mode)
 {
+    begin();
+}
 
+void AXP192::begin()
+{
     Wire1.begin(21, 22);
     Wire1.setClock(400000);
 
@@ -61,8 +67,15 @@ void AXP192::begin(mbus_mode_t mode)
     delay(100);
     // I2C_WriteByteDataAt(0X15,0XFE,0XFF);
 
-    //  bus power mode_output
-    SetBusPowerMode(mode);
+    // axp: check v-bus status
+    if(Read8bit(0x00) & 0x08) {
+        Write1Byte(0x30, Read8bit(0x30) | 0x80);
+        // if v-bus can use, disable M-Bus 5V output to input
+        SetBusPowerMode(kMBusModeInput);
+    }else{
+        // if not, enable M-Bus 5V output
+        SetBusPowerMode(kMBusModeOutput);
+    }
 }
 
 void AXP192::Write1Byte(uint8_t Addr, uint8_t Data)
@@ -136,7 +149,7 @@ uint32_t AXP192::Read32bit(uint8_t Addr)
     Wire1.beginTransmission(0x34);
     Wire1.write(Addr);
     Wire1.endTransmission();
-    Wire1.requestFrom(0x34, 2);
+    Wire1.requestFrom(0x34, 4);
     for (int i = 0; i < 4; i++)
     {
         ReData <<= 8;
@@ -224,7 +237,7 @@ float AXP192::GetCoulombData(void)
 
     //c = 65536 * current_LSB * (coin - coout) / 3600 / ADC rate
     //Adc rate can be read from 84H ,change this variable if you change the ADC reate
-    float ccc = 65536 * 0.5 * (coin - coout) / 3600.0 / 25.0;
+    float ccc = 65536 * 0.5 * (int32_t)(coin - coout) / 3600.0 / 25.0;
     return ccc;
 }
 
@@ -250,6 +263,17 @@ void AXP192::PrepareToSleep(void)
 
     // Turn LCD backlight off
     SetDCDC3(false);
+}
+
+// Get current battery level
+float AXP192::GetBatteryLevel(void)
+{
+    const float batVoltage = GetBatVoltage();
+    const float batPercentage = 
+        (batVoltage < 3.248088) 
+        ? (0) 
+        : (batVoltage - 3.120712) * 100;       
+    return (batPercentage <= 100) ? batPercentage : 100;    
 }
 
 void AXP192::RestoreFromLightSleep(void)
@@ -527,31 +551,32 @@ void AXP192::SetLCDRSet(bool state)
     Write1Byte(reg_addr, data);
 }
 
+// Select source for BUS_5V
+// 0 : use internal boost
+// 1 : powered externally
 void AXP192::SetBusPowerMode(uint8_t state)
 {
     uint8_t data;
     if (state == 0)
     {
+        // Set GPIO to 3.3V (LDO OUTPUT mode)
         data = Read8bit(0x91);
-        Write1Byte(0x91, (data & 0X0F) | 0XF0);
-
+        Write1Byte(0x91, (data & 0x0F) | 0xF0);
+        // Set GPIO0 to LDO OUTPUT, pullup N_VBUSEN to disable VBUS supply from BUS_5V
         data = Read8bit(0x90);
-        Write1Byte(0x90, (data & 0XF8) | 0X02); //set GPIO0 to LDO OUTPUT , pullup N_VBUSEN to disable supply from BUS_5V
-
-        data = Read8bit(0x91);
-
-        data = Read8bit(0x12);         //read reg 0x12
-        Write1Byte(0x12, data | 0x40); //set EXTEN to enable 5v boost
+        Write1Byte(0x90, (data & 0xF8) | 0x02);
+        // Set EXTEN to enable 5v boost
+        data = Read8bit(0x10);
+        Write1Byte(0x10, data | 0x04);
     }
     else
     {
-        data = Read8bit(0x12);         //read reg 0x10
-        Write1Byte(0x12, data & 0XBF); //set EXTEN to disable 5v boost
-
-        //delay(2000);
-
+        // Set EXTEN to disable 5v boost
+        data = Read8bit(0x10);
+        Write1Byte(0x10, data & ~0x04);
+        // Set GPIO0 to float, using enternal pulldown resistor to enable VBUS supply from BUS_5V
         data = Read8bit(0x90);
-        Write1Byte(0x90, (data & 0xF8) | 0X01); //set GPIO0 to float , using enternal pulldown resistor to enable supply from BUS_5VS
+        Write1Byte(0x90, (data & 0xF8) | 0x07);
     }
 }
 
